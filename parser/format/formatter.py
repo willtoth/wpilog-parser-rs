@@ -1,7 +1,8 @@
 import mmap
 import json
+import re
 
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Set
 
 from wpilib.datalog import DataLogReader, DataLogRecord, StartRecordData
 from format.models import (
@@ -10,6 +11,10 @@ from format.models import (
     LongRow,
     NestedValue
 )
+
+def sanitize_column_name(name: str) -> str:
+    """Sanitizes column names by replacing invalid characters with underscores."""
+    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")  # Replace groups of special characters with "_"
 
 class Formatter:
     def __init__(self,
@@ -24,6 +29,7 @@ class Formatter:
             OutputFormat.WIDE: self.parse_record_wide,
             OutputFormat.LONG: self.parse_record_long
         }
+        self.metrics_names: Set[str] = set()
 
     @staticmethod
     def parse_record_wide(record: DataLogRecord,
@@ -35,28 +41,35 @@ class Formatter:
             "type": entry.type
         }
 
-        try:
-            if entry.type == "double":
-                parsed_data[entry.name] = record.getDouble()
-            elif entry.type == "int64":
-                parsed_data[entry.name] = record.getInteger()
-            elif entry.type in ("string", "json"):
-                parsed_data[entry.name] = record.getString()
-            elif entry.type == "boolean":
-                parsed_data[entry.name] = record.getBoolean()
-            elif entry.type == "boolean[]":
-                parsed_data[entry.name] = record.getBooleanArray()
-            elif entry.type == "double[]":
-                parsed_data[entry.name] = list(record.getDoubleArray())
-            elif entry.type == "float[]":
-                parsed_data[entry.name] = list(record.getFloatArray())
-            elif entry.type == "int64[]":
-                parsed_data[entry.name] = list(record.getIntegerArray())
-            elif entry.type == "string[]":
-                parsed_data[entry.name] = record.getStringArray()
-        except TypeError:
-            parsed_data[entry.name] = None
-
+        # try:
+        if entry.type == "double":
+            parsed_data[sanitize_column_name(entry.name)] = record.getDouble()
+        elif entry.type == "int64":
+            parsed_data[sanitize_column_name(entry.name)] = record.getInteger()
+        elif entry.type in ("string", "json"):
+            print("Name: " + entry.name)
+            print(type(record.data))
+            parsed_data[sanitize_column_name(entry.name)] = record.getString()
+        elif entry.type == "boolean":
+            parsed_data[sanitize_column_name(entry.name)] = record.getBoolean()
+        elif entry.type == "boolean[]":
+            parsed_data[sanitize_column_name(entry.name)] = record.getBooleanArray()
+        elif entry.type == "double[]":
+            parsed_data[sanitize_column_name(entry.name)] = list(record.getDoubleArray())
+        elif entry.type == "float[]":
+            parsed_data[sanitize_column_name(entry.name)] = list(record.getFloatArray())
+        elif entry.type == "int64[]":
+            parsed_data[sanitize_column_name(entry.name)] = list(record.getIntegerArray())
+        elif entry.type == "string[]":
+            parsed_data[sanitize_column_name(entry.name)] = record.getStringArray()
+        elif entry.type == "msgpack":
+            parsed_data[sanitize_column_name(entry.name)] = record.getMsgPack()
+        elif "proto" in entry.type:
+            parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
+        elif entry.type == 'structschema':
+            parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
+        else:
+            parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
         return WideRow(
             **parsed_data
         )
@@ -127,19 +140,21 @@ class Formatter:
                     try:
                         data: StartRecordData = record.getStartData()
                         entries[data.entry] = data
-                    except TypeError:
-                        continue
+                    except TypeError as error:
+                        raise Exception(error)
                 elif record.isFinish():
                     try:
                         entry: int = record.getFinishEntry()
                         entries.pop(entry, None)
-                    except TypeError:
-                        continue
+                    except TypeError as error:
+                        raise Exception(error)
+
                 elif not record.isControl():
                     entry: Union[StartRecordData, None] = entries.get(record.entry)
                     if entry:
                         parse_method = self.parse_methods.get(self.output_format)
                         parsed_data: Union[WideRow, LongRow] = parse_method(record, entry)
+                        self.metrics_names.add(entry.name)
                         records.append(parsed_data)
         return records
 
