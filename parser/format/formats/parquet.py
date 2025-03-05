@@ -21,9 +21,6 @@ class FormatParquet(Formatter):
         if not rows:
             raise ValueError(f"No valid records to write to Parquet for {self.output_file}")
 
-        with open(self.output_file, 'x') as file:
-            df: pd.DataFrame = pd.DataFrame([row.model_dump() for row in rows])
-            print(f"Total Columns being written to parquet file: {len(df.columns)}")
-            df.to_parquet(self.output_file)
-
-
+        df: pd.DataFrame = pd.DataFrame([row.model_dump() for row in rows])
+        print(f"Total Columns being written to parquet file: {len(df.columns)}")
+        df.to_parquet(self.output_file)
