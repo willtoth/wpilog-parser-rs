@@ -14,7 +14,7 @@ from format.models import (
 
 def sanitize_column_name(name: str) -> str:
     """Sanitizes column names by replacing invalid characters with underscores."""
-    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")  # Replace groups of special characters with "_"
+    return name # re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")  # Replace groups of special characters with "_"
 
 class Formatter:
     def __init__(self,
