@@ -18,17 +18,16 @@ def prompt_for_overwrite(filename: str, remember_choice: Optional[FileAction] = 
     if remember_choice is not None:
         return remember_choice, True
 
-    while True:
-        response = input(f"\nFile {filename} already exists.\nDo you want to:\n[s]kip\n[o]verwrite\n[S]kip all\n[O]verwrite all\n> ").lower()
+    response = input(f"\nFile {filename} already exists.\nDo you want to:\n[s]kip\n[o]verwrite\n[S]kip all\n[O]verwrite all\n> ")
 
-        if response == 'o':
-            return FileAction.OVERWRITE, False
-        elif response == 'O':
-            return FileAction.OVERWRITE, True
-        else:  # Default to skip for any other input
-            if response == 'S':
-                return FileAction.SKIP, True
-            return FileAction.SKIP, False
+    if response == 'o':
+        return FileAction.OVERWRITE, False
+    elif response == 'O':
+        return FileAction.OVERWRITE, True
+    else:  # Default to skip for any other input
+        if response == 'S':
+            return FileAction.SKIP, True
+        return FileAction.SKIP, False
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Convert all .wpilog files in a directory to .parquet files')
@@ -36,7 +35,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     input_dir: str = args.input_dir
-    remember_choice = None
+    remember_choice: Optional[FileAction] = None
 
     for file in os.listdir(input_dir):
         if not file.endswith('.wpilog'):
