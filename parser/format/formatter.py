@@ -47,8 +47,8 @@ class Formatter:
         elif entry.type == "int64":
             parsed_data[sanitize_column_name(entry.name)] = record.getInteger()
         elif entry.type in ("string", "json"):
-            print("Name: " + entry.name)
-            print(type(record.data))
+            # print("Name: " + entry.name)
+            # print(type(record.data))
             parsed_data[sanitize_column_name(entry.name)] = record.getString()
         elif entry.type == "boolean":
             parsed_data[sanitize_column_name(entry.name)] = record.getBoolean()
