@@ -49,6 +49,8 @@ def sanitize_column_name(name: str) -> str:
 
 
 class Formatter:
+    loop_count: int = 0  # Class-level variable for counting timestamps
+
     def __init__(self,
                  wpilog_file: str,
                  output_directory: str,
@@ -71,8 +73,12 @@ class Formatter:
         parsed_data: Dict[str, Any] = {
             "timestamp": record.timestamp / 1_000_000,  # Convert to seconds
             "entry": record.entry,
-            "type": entry.type
+            "type": entry.type,
+            "loop_count": Formatter.loop_count
         }
+
+        if entry.name == "/Timestamp":
+            Formatter.loop_count += 1
 
         # try:
         if entry.type == "double":
@@ -80,8 +86,6 @@ class Formatter:
         elif entry.type == "int64":
             parsed_data[sanitize_column_name(entry.name)] = record.getInteger()
         elif entry.type in ("string", "json"):
-            # print("Name: " + entry.name)
-            # print(type(record.data))
             parsed_data[sanitize_column_name(entry.name)] = record.getString()
         elif entry.type == "boolean":
             parsed_data[sanitize_column_name(entry.name)] = record.getBoolean()
@@ -153,6 +157,7 @@ class Formatter:
             parsed_data[entry.name] = struct_values
         else:
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
+
         return WideRow(
             **parsed_data
         )
@@ -165,6 +170,7 @@ class Formatter:
                 timestamp=record.timestamp / 1_000_000,
                 entry=record.entry,
                 type=entry.type,
+                loop_count=Formatter.loop_count,
                 json=dict(),
                 value=NestedValue(
                     double=None,
@@ -179,6 +185,10 @@ class Formatter:
                 )
             )
         )
+
+        if entry.name == "/Timestamp":
+            Formatter.loop_count += 1
+
         try:
             if entry.type == "double":
                 row.value.double = record.getDouble()
