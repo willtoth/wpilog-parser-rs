@@ -1,6 +1,11 @@
 test-data/
 .venv/
 .DS_Store
+*.db
+*.duckdb
+*.duckdb.tmp/
+2025txwac-logs/
+test-data/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

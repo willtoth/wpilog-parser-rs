@@ -2,6 +2,10 @@ from enum import Enum
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Extra, Field
 
+class FileFormat(Enum):
+    PARQUET = 'parquet'
+    AVRO = 'avro'
+    JSON = 'json'
 
 class OutputFormat(Enum):
     WIDE = 'wide'

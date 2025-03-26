@@ -12,9 +12,11 @@ from format.models import (
     NestedValue
 )
 
+
 def sanitize_column_name(name: str) -> str:
     """Sanitizes column names by replacing invalid characters with underscores."""
-    return name # re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")  # Replace groups of special characters with "_"
+    return name  # re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_")  # Replace groups of special characters with "_"
+
 
 class Formatter:
     def __init__(self,
@@ -109,7 +111,7 @@ class Formatter:
             elif entry.type == "boolean":
                 row.value.boolean = record.getBoolean()
             elif entry.type == "boolean[]":
-                row.value.boolean_array= record.getBooleanArray()
+                row.value.boolean_array = record.getBooleanArray()
             elif entry.type == "double[]":
                 row.value.double_array = list(record.getDoubleArray())
             elif entry.type == "float[]":
@@ -117,7 +119,7 @@ class Formatter:
             elif entry.type == "int64[]":
                 row.value.int64_array = list(record.getIntegerArray())
             elif entry.type == "string[]":
-                row.value.string_array= record.getStringArray()
+                row.value.string_array = record.getStringArray()
         except TypeError:
             row.value = None
 
@@ -125,7 +127,7 @@ class Formatter:
 
     def read_wpilog(self) -> List[Union[WideRow, LongRow]]:
         """Reads the WPILOG file and processes records into a structured format."""
-        records: List[Union[WideRow, LongRow]]  = []
+        records: List[Union[WideRow, LongRow]] = []
         entries: Dict[int, StartRecordData] = {}
 
         with open(self.wpilog_file, "rb") as f:

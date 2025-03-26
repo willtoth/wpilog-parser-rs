@@ -11,4 +11,5 @@ dependencies = [
     "pyarrow>=19.0.1",
     "pydantic>=2.10.6",
     "ruff>=0.9.7",
+    "typer>=0.15.1",
 ]
