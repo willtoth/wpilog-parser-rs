@@ -2,14 +2,27 @@ from enum import Enum
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Extra, Field
 
+
 class FileFormat(Enum):
     PARQUET = 'parquet'
     AVRO = 'avro'
     JSON = 'json'
 
+
 class OutputFormat(Enum):
     WIDE = 'wide'
     LONG = 'long'
+
+
+class DerivedSchemaColumn(BaseModel):
+    name: str
+    type: str
+
+
+class DerivedSchema(BaseModel):
+    name: str
+    columns: List[DerivedSchemaColumn]
+
 
 class WideRow(BaseModel, extra=Extra.allow):
     """
@@ -19,6 +32,7 @@ class WideRow(BaseModel, extra=Extra.allow):
     timestamp: float
     entry: int
     type: str
+
 
 class NestedValue(BaseModel):
     double: Optional[float]
@@ -30,6 +44,7 @@ class NestedValue(BaseModel):
     float_array: Optional[List[float]]
     int64_array: Optional[List[int]]
     string_array: Optional[List[str]]
+
 
 class LongRow(BaseModel):
     timestamp: float

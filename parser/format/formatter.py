@@ -1,16 +1,46 @@
 import mmap
 import json
+import struct
 import re
 
-from typing import List, Dict, Any, Union, Set
+from typing import List, Dict, Any, Union, Set, Optional, Tuple
 
 from wpilib.datalog import DataLogReader, DataLogRecord, StartRecordData
 from format.models import (
     OutputFormat,
     WideRow,
     LongRow,
-    NestedValue
+    NestedValue,
+    DerivedSchemaColumn,
+    DerivedSchema
 )
+
+
+def convert_struct_schema_to_dict(schema_str: str) -> List[DerivedSchemaColumn]:
+    fields = []
+    # Split by semicolon, then extract type and name
+    for part in schema_str.split(';'):
+        part = part.strip()
+        if not part:
+            continue
+        # Handle enum inline
+        if part.startswith("enum"):
+            # Example: enum {MEGATAG_1=0, MEGATAG_2=1, PHOTONVISION=2} int32 type
+            enum_part, type_and_name = part.split('}', 1)
+            type_and_name = type_and_name.strip()
+            if ' ' in type_and_name:
+                typ, name = type_and_name.split()
+                fields.append((typ, name))
+        else:
+            if ' ' in part:
+                typ, name = part.split()
+                fields.append((typ, name))
+
+    columns: List[DerivedSchemaColumn] = []
+    for type, name in fields:
+        columns.append(DerivedSchemaColumn(name=name, type=type))
+
+    return columns
 
 
 def sanitize_column_name(name: str) -> str:
@@ -21,20 +51,21 @@ def sanitize_column_name(name: str) -> str:
 class Formatter:
     def __init__(self,
                  wpilog_file: str,
-                 output_file: str,
+                 output_directory: str,
                  output_format: OutputFormat = OutputFormat.WIDE) -> None:
 
         self.wpilog_file: str = wpilog_file
-        self.output_file: str = output_file
+        self.output_directory: str = output_directory
         self.output_format = output_format
         self.parse_methods = {
             OutputFormat.WIDE: self.parse_record_wide,
             OutputFormat.LONG: self.parse_record_long
         }
         self.metrics_names: Set[str] = set()
+        self.current_entry_type: Optional[str] = None
+        self.struct_schemas: List[DerivedSchema] = []
 
-    @staticmethod
-    def parse_record_wide(record: DataLogRecord,
+    def parse_record_wide(self, record: DataLogRecord,
                           entry: StartRecordData) -> WideRow:
         """Parses a WPILOG record into a structured dictionary with flattened data."""
         parsed_data: Dict[str, Any] = {
@@ -69,15 +100,64 @@ class Formatter:
         elif "proto" in entry.type:
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
         elif entry.type == 'structschema':
+            print(f"Storing struct: {entry.name}, with schema of: {record.getString()}")
+            columns: List[DerivedSchemaColumn] = convert_struct_schema_to_dict(record.getString())
+            schema_name: str = entry.name.split(".schema/")[1]
+            derived_schema: DerivedSchema = DerivedSchema(
+                name=schema_name,
+                columns=columns
+            )
+            print(f"Derived Schema: {derived_schema}")
+            self.struct_schemas.append(derived_schema)
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
+
+        elif entry.type.startswith('struct:'):
+            schema_name = entry.type.split('[]')[0] if entry.type.endswith('[]') else entry.type
+            # print(f"Schema name: {schema_name}")
+            struct_data = record.data.__bytes__()
+
+            # Find schema
+            schema = next((s for s in self.struct_schemas if s.name == schema_name), None)
+            if schema is None:
+                raise ValueError(f"No struct schema found for: {schema_name}")
+
+            def unpack_struct(columns: List[DerivedSchemaColumn], data: bytes, offset: int = 0, prefix: str = "") -> \
+                    Tuple[Dict[str, Any], int]:
+                result = {}
+                for col in columns:
+                    key = f"{col.name}" if prefix else col.name
+                    if col.type == "double":
+                        # print(key)
+                        result[key] = struct.unpack_from("<d", data, offset)[0] if data else None
+                        offset += 8
+                    elif col.type == "float":
+                        result[key] = struct.unpack_from("<f", data, offset)[0] if data else None
+                        offset += 4
+                    elif col.type == "int32":
+                        result[key] = struct.unpack_from("<i", data, offset)[0] if data else None
+                        offset += 4
+                    elif col.type == "int64":
+                        result[key] = struct.unpack_from("<q", data, offset)[0] if data else None
+                        offset += 8
+                    else:
+                        # Recurse into nested struct
+                        nested_schema = next((s for s in self.struct_schemas if s.name.split('struct:')[1] == col.type),
+                                             None)
+                        if not nested_schema:
+                            raise ValueError(f"No nested schema found for: {col.type}")
+                        nested_result, offset = unpack_struct(nested_schema.columns, data, offset, key)
+                        result.update(nested_result)
+                return result, offset
+
+            struct_values, _ = unpack_struct(schema.columns, struct_data)
+            parsed_data[entry.name] = struct_values
         else:
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
         return WideRow(
             **parsed_data
         )
 
-    @staticmethod
-    def parse_record_long(record: DataLogRecord,
+    def parse_record_long(self, record: DataLogRecord,
                           entry: StartRecordData) -> LongRow:
         """Parses a WPILOG record into a structured dictionary with flattened data."""
         row: LongRow = (
@@ -125,7 +205,7 @@ class Formatter:
 
         return row
 
-    def read_wpilog(self) -> List[Union[WideRow, LongRow]]:
+    def read_wpilog(self, infer_schema_only: bool = False) -> List[Union[WideRow, LongRow]]:
         """Reads the WPILOG file and processes records into a structured format."""
         records: List[Union[WideRow, LongRow]] = []
         entries: Dict[int, StartRecordData] = {}
@@ -155,9 +235,23 @@ class Formatter:
                     entry: Union[StartRecordData, None] = entries.get(record.entry)
                     if entry:
                         parse_method = self.parse_methods.get(self.output_format)
-                        parsed_data: Union[WideRow, LongRow] = parse_method(record, entry)
-                        self.metrics_names.add(entry.name)
-                        records.append(parsed_data)
+                        if infer_schema_only:
+                            if entry.type == 'structschema':
+                                # print(f"Storing struct: {entry.name}, with schema of: {record.getString()}")
+                                columns: List[DerivedSchemaColumn] = convert_struct_schema_to_dict(record.getString())
+                                schema_name: str = entry.name.split(".schema/")[1]
+                                derived_schema: DerivedSchema = DerivedSchema(
+                                    name=schema_name,
+                                    columns=columns
+                                )
+                                # print(f"Derived Schema: {derived_schema}")
+                                self.struct_schemas.append(derived_schema)
+                        else:
+                            parsed_data: Union[WideRow, LongRow] = self.parse_record_wide(record, entry)
+                            self.current_entry_type = entry.type
+                            # print(self.current_entry_type)
+                            self.metrics_names.add(entry.name)
+                            records.append(parsed_data)
         return records
 
     def convert(self,
