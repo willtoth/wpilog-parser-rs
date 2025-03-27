@@ -20,7 +20,7 @@ def convert_one_file(
         file_format: FileFormat,
         output_format: OutputFormat,
 ) -> None:
-    logger.info(f"🚀 Transforming {input_file} → {output_dir}")
+    logger.info(f"Transforming {input_file} → {output_dir}")
     start_time: float = time.perf_counter()
 
     match file_format:

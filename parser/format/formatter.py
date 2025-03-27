@@ -100,14 +100,14 @@ class Formatter:
         elif "proto" in entry.type:
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
         elif entry.type == 'structschema':
-            print(f"Storing struct: {entry.name}, with schema of: {record.getString()}")
+            # print(f"Storing struct: {entry.name}, with schema of: {record.getString()}")
             columns: List[DerivedSchemaColumn] = convert_struct_schema_to_dict(record.getString())
             schema_name: str = entry.name.split(".schema/")[1]
             derived_schema: DerivedSchema = DerivedSchema(
                 name=schema_name,
                 columns=columns
             )
-            print(f"Derived Schema: {derived_schema}")
+            # print(f"Derived Schema: {derived_schema}")
             self.struct_schemas.append(derived_schema)
             parsed_data[sanitize_column_name(entry.name)] = record.data.__bytes__()
 
