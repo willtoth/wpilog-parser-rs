@@ -181,7 +181,8 @@ cython_debug/
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# Note: Cargo.lock is committed because this project has a binary (CLI)
+# For reproducible builds across platforms
 
 # IDE
 .vscode/
