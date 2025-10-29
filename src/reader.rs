@@ -4,10 +4,12 @@ use crate::datalog::DataLogReader;
 use crate::error::{Error, Result};
 use crate::formatter::Formatter;
 use crate::models::{OutputFormat, WideRow};
+use crate::progress::ProgressUpdate;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::mpsc;
 
 static GLOBAL_LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -185,6 +187,167 @@ impl WpilogReader {
     /// custom parsing logic or performance-critical applications.
     pub fn low_level_reader(&self) -> DataLogReader<'_> {
         DataLogReader::new(&self.data)
+    }
+
+    /// Read all records asynchronously with progress reporting.
+    ///
+    /// This method spawns a blocking task to read the WPILog file and sends
+    /// progress updates through the returned channel. This is ideal for UI
+    /// integration where you need to display progress without blocking the
+    /// main thread.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (future_result, progress_receiver) where:
+    /// - `future_result` is a boxed future that yields the records
+    /// - `progress_receiver` is an mpsc channel for receiving progress updates
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use wpilog_parser::WpilogReader;
+    /// use tokio::sync::mpsc;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let reader = WpilogReader::from_file("data.wpilog")?;
+    ///     let (result, mut progress_rx) = reader.read_all_with_progress_async();
+    ///
+    ///     // Spawn a task to handle progress updates
+    ///     tokio::spawn(async move {
+    ///         while let Some(update) = progress_rx.recv().await {
+    ///             match update {
+    ///                 wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+    ///                     println!("Progress: {:.1}%", percent);
+    ///                 }
+    ///                 wpilog_parser::ProgressUpdate::Complete { .. } => {
+    ///                     println!("Done!");
+    ///                 }
+    ///                 _ => {}
+    ///             }
+    ///         }
+    ///     });
+    ///
+    ///     let records = result.await?;
+    ///     println!("Read {} records", records.len());
+    ///     Ok(())
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn read_all_with_progress_async(
+        self,
+    ) -> (
+        impl std::future::Future<Output = Result<Vec<WideRow>>>,
+        mpsc::Receiver<ProgressUpdate>,
+    ) {
+        let (tx, rx) = mpsc::channel(64);
+
+        let future = async move {
+            let data = self.data;
+
+            // Spawn a blocking task to do the actual reading
+            tokio::task::spawn_blocking({
+                let tx = tx.clone();
+                let data = data.clone();
+                move || {
+                    let reader = Self {
+                        data,
+                        formatter: None,
+                    };
+
+                    // Run the synchronous read_all and report progress
+                    match reader.read_all() {
+                        Ok(records) => {
+                            let _ = tx.blocking_send(ProgressUpdate::Complete {
+                                total_processed: records.len() as u64,
+                            });
+                            Ok(records)
+                        }
+                        Err(e) => {
+                            let _ = tx.blocking_send(ProgressUpdate::Error {
+                                message: e.to_string(),
+                            });
+                            Err(e)
+                        }
+                    }
+                }
+            })
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?
+        };
+
+        (future, rx)
+    }
+
+    /// Read all records with progress reporting using a channel.
+    ///
+    /// This variant allows you to provide your own progress sender for more
+    /// control over how progress updates are handled.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - Channel sender for progress updates
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use wpilog_parser::WpilogReader;
+    /// use tokio::sync::mpsc;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let reader = WpilogReader::from_file("data.wpilog")?;
+    ///     let (tx, mut rx) = mpsc::channel(64);
+    ///
+    ///     // Spawn task to handle progress
+    ///     let progress_task = tokio::spawn(async move {
+    ///         while let Some(update) = rx.recv().await {
+    ///             println!("{:?}", update);
+    ///         }
+    ///     });
+    ///
+    ///     let records = reader.read_all_with_progress_channel(tx).await?;
+    ///     println!("Read {} records", records.len());
+    ///
+    ///     progress_task.await?;
+    ///     Ok(())
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub async fn read_all_with_progress_channel(
+        self,
+        tx: mpsc::Sender<ProgressUpdate>,
+    ) -> Result<Vec<WideRow>> {
+        let data = self.data;
+
+        // Spawn a blocking task to do the actual reading
+        tokio::task::spawn_blocking({
+            let tx = tx.clone();
+            let data = data.clone();
+            move || {
+                let reader = Self {
+                    data,
+                    formatter: None,
+                };
+
+                match reader.read_all() {
+                    Ok(records) => {
+                        let _ = tx.blocking_send(ProgressUpdate::Complete {
+                            total_processed: records.len() as u64,
+                        });
+                        Ok(records)
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(ProgressUpdate::Error {
+                            message: e.to_string(),
+                        });
+                        Err(e)
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
     }
 }
 

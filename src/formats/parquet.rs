@@ -12,8 +12,10 @@ use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 use crate::models::WideRow;
+use crate::progress::ProgressUpdate;
 
 pub struct ParquetFormatter {
     output_directory: String,
@@ -56,6 +58,78 @@ impl ParquetFormatter {
         }
 
         info!("All chunks have been written");
+        Ok(())
+    }
+
+    /// Convert records to Parquet format with progress reporting.
+    ///
+    /// This method sends progress updates through the provided channel
+    /// as each chunk is written. Progress is reported as:
+    /// - `Started` when the operation begins
+    /// - `Progress` after each chunk is written
+    /// - `Complete` when all chunks are finished
+    /// - `Error` if an error occurs
+    pub fn convert_with_progress(
+        &self,
+        rows: &[WideRow],
+        tx: mpsc::Sender<ProgressUpdate>,
+    ) -> Result<()> {
+        if rows.is_empty() {
+            anyhow::bail!("No valid records to write to Parquet");
+        }
+
+        create_dir_all(&self.output_directory)?;
+
+        let total_chunks = (rows.len() + self.chunk_size - 1) / self.chunk_size;
+        let total_rows = rows.len() as u64;
+
+        // Send started message
+        let _ = tx.blocking_send(ProgressUpdate::Started {
+            phase: "Writing Parquet files".to_string(),
+            total: total_rows,
+        });
+
+        info!(
+            "Generated a total of {} chunks, will now create that total amount of files.",
+            total_chunks
+        );
+
+        let mut rows_processed = 0u64;
+
+        for (i, chunk) in rows.chunks(self.chunk_size).enumerate() {
+            info!(
+                "Writing chunk {}/{}, {} rows",
+                i + 1,
+                total_chunks,
+                chunk.len()
+            );
+
+            let output_path = Path::new(&self.output_directory)
+                .join(format!("file_part{:03}.parquet", i));
+
+            if let Err(e) = self.write_chunk_to_parquet(chunk, &output_path) {
+                let _ = tx.blocking_send(ProgressUpdate::Error {
+                    message: format!("Failed to write chunk {}: {}", i, e),
+                });
+                return Err(e);
+            }
+
+            rows_processed += chunk.len() as u64;
+            let percent = (rows_processed as f32 / total_rows as f32) * 100.0;
+
+            let _ = tx.blocking_send(ProgressUpdate::Progress {
+                percent,
+                processed: rows_processed,
+                total: total_rows,
+                current_phase: format!("Written chunk {}/{}", i + 1, total_chunks),
+            });
+        }
+
+        info!("All chunks have been written");
+        let _ = tx.blocking_send(ProgressUpdate::Complete {
+            total_processed: rows_processed,
+        });
+
         Ok(())
     }
 

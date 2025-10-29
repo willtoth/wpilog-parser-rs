@@ -76,6 +76,94 @@
 //! # Ok::<(), wpilog_parser::Error>(())
 //! ```
 //!
+//! ### Progress Tracking for UI Integration
+//!
+//! For applications with UI that need to display progress while reading or writing:
+//!
+//! ```no_run
+//! use wpilog_parser::WpilogReader;
+//! use tokio::sync::mpsc;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let reader = WpilogReader::from_file("data.wpilog")?;
+//!
+//!     // Get async future and progress channel
+//!     let (result, mut progress_rx) = reader.read_all_with_progress_async();
+//!
+//!     // Spawn task to handle progress updates in your UI
+//!     let ui_handle = tokio::spawn(async move {
+//!         while let Some(update) = progress_rx.recv().await {
+//!             match update {
+//!                 wpilog_parser::ProgressUpdate::Started { phase, total } => {
+//!                     println!("{}: {} items total", phase, total);
+//!                 }
+//!                 wpilog_parser::ProgressUpdate::Progress {
+//!                     percent,
+//!                     processed,
+//!                     total,
+//!                     current_phase,
+//!                 } => {
+//!                     println!("{}: {:.1}% ({}/{})", current_phase, percent, processed, total);
+//!                     // Update UI progress bar here
+//!                 }
+//!                 wpilog_parser::ProgressUpdate::Complete { total_processed } => {
+//!                     println!("Completed! Processed {} items", total_processed);
+//!                 }
+//!                 wpilog_parser::ProgressUpdate::Error { message } => {
+//!                     eprintln!("Error: {}", message);
+//!                 }
+//!                 _ => {}
+//!             }
+//!         }
+//!     });
+//!
+//!     // Wait for reading to complete
+//!     let records = result.await?;
+//!     println!("Read {} records", records.len());
+//!
+//!     ui_handle.await?;
+//!     Ok(())
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! #### Writing with Progress
+//!
+//! Similarly, for writing Parquet files with progress reporting:
+//!
+//! ```no_run
+//! use wpilog_parser::{WpilogReader, ParquetWriter};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let reader = WpilogReader::from_file("data.wpilog")?;
+//!     let records = reader.read_all()?;
+//!
+//!     let writer = ParquetWriter::new("./output");
+//!     let (result, mut progress_rx) = writer.write_with_progress_async(&records);
+//!
+//!     // Handle progress updates
+//!     let ui_handle = tokio::spawn(async move {
+//!         while let Some(update) = progress_rx.recv().await {
+//!             match update {
+//!                 wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+//!                     println!("Write progress: {:.1}%", percent);
+//!                 }
+//!                 _ => {}
+//!             }
+//!         }
+//!     });
+//!
+//!     let stats = result.await?;
+//!     println!("{}", stats.summary());
+//!
+//!     ui_handle.await?;
+//!     Ok(())
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ### Accessing Metadata
 //!
 //! Get metric names and struct schemas:
@@ -119,11 +207,13 @@
 pub mod error;
 pub mod reader;
 pub mod writer;
+pub mod progress;
 
 // Re-export commonly used types
 pub use error::{Error, Result};
 pub use reader::{WpilogReader, WpilogReaderBuilder};
 pub use writer::{ParquetWriter, ParquetWriterBuilder, WriteStats};
+pub use progress::{ProgressUpdate, ProgressTracker};
 
 // Re-export models for users who need them
 pub use models::{OutputFormat, WideRow};
