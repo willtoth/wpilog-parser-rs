@@ -1,5 +1,7 @@
 //! Integration tests for progress tracking functionality
 use wpilog_parser::progress::{ProgressTracker, ProgressUpdate};
+
+#[cfg(feature = "tokio-runtime")]
 use tokio::sync::mpsc;
 
 #[test]
@@ -150,8 +152,8 @@ fn test_progress_tracker_zero_total() {
     assert!(!tracker.is_complete());
 }
 
-#[tokio::test]
-async fn test_progress_update_enum_clone_and_debug() {
+#[test]
+fn test_progress_update_enum_clone_and_debug() {
     let update = ProgressUpdate::Progress {
         percent: 50.0,
         processed: 500,
@@ -161,7 +163,10 @@ async fn test_progress_update_enum_clone_and_debug() {
 
     // Test Clone
     let cloned = update.clone();
-    assert_eq!(std::mem::discriminant(&update), std::mem::discriminant(&cloned));
+    assert_eq!(
+        std::mem::discriminant(&update),
+        std::mem::discriminant(&cloned)
+    );
 
     // Test Debug
     let debug_str = format!("{:?}", update);
@@ -196,8 +201,50 @@ fn test_progress_tracker_multiple_threads() {
     assert_eq!(tracker.percent(), 100.0);
 }
 
+#[test]
+fn test_sync_mpsc_channel_with_progress_updates() {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel();
+
+    // Spawn a thread to send progress updates
+    let handle = thread::spawn(move || {
+        for i in 0..5 {
+            let _ = tx.send(ProgressUpdate::Progress {
+                percent: (i as f32 / 5.0) * 100.0,
+                processed: i,
+                total: 5,
+                current_phase: format!("Step {}", i),
+            });
+        }
+    });
+
+    // Receive progress updates
+    let mut updates = vec![];
+    while let Ok(update) = rx.recv() {
+        updates.push(update);
+        if updates.len() >= 5 {
+            break;
+        }
+    }
+
+    handle.join().unwrap();
+
+    assert_eq!(updates.len(), 5);
+    for (i, update) in updates.iter().enumerate() {
+        match update {
+            ProgressUpdate::Progress { percent, .. } => {
+                assert_eq!(*percent, (i as f32 / 5.0) * 100.0);
+            }
+            _ => panic!("Expected Progress variant"),
+        }
+    }
+}
+
+#[cfg(feature = "tokio-runtime")]
 #[tokio::test]
-async fn test_mpsc_channel_with_progress_updates() {
+async fn test_tokio_mpsc_channel_with_progress_updates() {
     let (tx, mut rx) = mpsc::channel(64);
 
     // Spawn a task to send progress updates
@@ -231,6 +278,7 @@ async fn test_mpsc_channel_with_progress_updates() {
     }
 }
 
+#[cfg(feature = "tokio-runtime")]
 #[test]
 fn test_progress_update_blocking_send() {
     let (tx, mut rx) = mpsc::channel(64);
@@ -248,4 +296,70 @@ fn test_progress_update_blocking_send() {
     // Receive the update
     let received = rx.blocking_recv();
     assert!(received.is_some());
+}
+
+#[test]
+fn test_sync_progress_with_std_mpsc() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+
+    // Simulate a background task that reports progress
+    let handle = thread::spawn(move || {
+        let tracker = ProgressTracker::new(100);
+
+        tx.send(ProgressUpdate::Started {
+            phase: "Processing".to_string(),
+            total: 100,
+        })
+        .unwrap();
+
+        for i in 1..=10 {
+            thread::sleep(Duration::from_millis(5));
+            tracker.increment_by(10);
+
+            tx.send(tracker.create_update()).unwrap();
+        }
+
+        tx.send(ProgressUpdate::Complete {
+            total_processed: 100,
+        })
+        .unwrap();
+    });
+
+    // Collect progress updates
+    let mut received_updates = vec![];
+    while let Ok(update) = rx.recv() {
+        match &update {
+            ProgressUpdate::Complete { .. } => {
+                received_updates.push(update);
+                break;
+            }
+            _ => received_updates.push(update),
+        }
+    }
+
+    handle.join().unwrap();
+
+    // Should have: 1 Started + 10 Progress + 1 Complete = 12 updates
+    assert_eq!(received_updates.len(), 12);
+
+    // Verify first is Started
+    match &received_updates[0] {
+        ProgressUpdate::Started { phase, total } => {
+            assert_eq!(phase, "Processing");
+            assert_eq!(*total, 100);
+        }
+        _ => panic!("Expected Started variant"),
+    }
+
+    // Verify last is Complete
+    match &received_updates[11] {
+        ProgressUpdate::Complete { total_processed } => {
+            assert_eq!(*total_processed, 100);
+        }
+        _ => panic!("Expected Complete variant"),
+    }
 }

@@ -9,7 +9,10 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
+use std::sync::mpsc;
+
+#[cfg(feature = "tokio-runtime")]
+use tokio::sync::mpsc as tokio_mpsc;
 
 static GLOBAL_LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -47,9 +50,7 @@ impl WpilogReader {
 
         let reader = DataLogReader::new(&data);
         if !reader.is_valid() {
-            return Err(Error::InvalidFormat(
-                "Not a valid WPILOG file".to_string(),
-            ));
+            return Err(Error::InvalidFormat("Not a valid WPILOG file".to_string()));
         }
 
         Ok(Self {
@@ -70,9 +71,7 @@ impl WpilogReader {
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
         let reader = DataLogReader::new(&data);
         if !reader.is_valid() {
-            return Err(Error::InvalidFormat(
-                "Not a valid WPILOG file".to_string(),
-            ));
+            return Err(Error::InvalidFormat("Not a valid WPILOG file".to_string()));
         }
 
         Ok(Self {
@@ -159,11 +158,7 @@ impl WpilogReader {
         // Reset global loop count
         GLOBAL_LOOP_COUNT.store(0, Ordering::Relaxed);
 
-        let mut formatter = Formatter::new(
-            String::new(),
-            String::new(),
-            OutputFormat::Wide,
-        );
+        let mut formatter = Formatter::new(String::new(), String::new(), OutputFormat::Wide);
 
         // First pass: infer schema
         formatter
@@ -189,22 +184,91 @@ impl WpilogReader {
         DataLogReader::new(&self.data)
     }
 
-    /// Read all records asynchronously with progress reporting.
+    /// Read all records with progress reporting using a blocking channel.
     ///
-    /// This method spawns a blocking task to read the WPILog file and sends
-    /// progress updates through the returned channel. This is ideal for UI
-    /// integration where you need to display progress without blocking the
-    /// main thread.
+    /// This method uses the standard library's `std::sync::mpsc` channels to send
+    /// progress updates. The actual reading happens synchronously and blocks until
+    /// complete. This is suitable for non-async contexts and doesn't require any
+    /// runtime dependencies.
     ///
     /// # Returns
     ///
-    /// A tuple of (future_result, progress_receiver) where:
-    /// - `future_result` is a boxed future that yields the records
+    /// A tuple of (records, progress_receiver) where:
+    /// - `records` is a vector of the read records (after completion)
     /// - `progress_receiver` is an mpsc channel for receiving progress updates
     ///
     /// # Examples
     ///
     /// ```no_run
+    /// use wpilog_parser::WpilogReader;
+    /// use std::thread;
+    ///
+    /// let reader = WpilogReader::from_file("data.wpilog")?;
+    /// let (records, progress_rx) = reader.read_all_with_progress();
+    ///
+    /// // Handle progress updates in a separate thread if desired
+    /// let progress_thread = thread::spawn(move || {
+    ///     while let Ok(update) = progress_rx.recv() {
+    ///         match update {
+    ///             wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+    ///                 println!("Progress: {:.1}%", percent);
+    ///             }
+    ///             wpilog_parser::ProgressUpdate::Complete { .. } => {
+    ///                 println!("Done!");
+    ///             }
+    ///             _ => {}
+    ///         }
+    ///     }
+    /// });
+    ///
+    /// println!("Read {} records", records.len());
+    /// progress_thread.join().ok();
+    /// # Ok::<(), wpilog_parser::Error>(())
+    /// ```
+    pub fn read_all_with_progress(self) -> (Vec<WideRow>, mpsc::Receiver<ProgressUpdate>) {
+        let (tx, rx) = mpsc::channel();
+
+        // Run the actual reading
+        let result = self.read_all();
+
+        match result {
+            Ok(records) => {
+                let _ = tx.send(ProgressUpdate::Complete {
+                    total_processed: records.len() as u64,
+                });
+                (records, rx)
+            }
+            Err(e) => {
+                let _ = tx.send(ProgressUpdate::Error {
+                    message: e.to_string(),
+                });
+                (vec![], rx)
+            }
+        }
+    }
+
+    /// Read all records asynchronously with progress reporting.
+    ///
+    /// This method requires the `tokio-runtime` feature and spawns a blocking task
+    /// to read the WPILog file while sending progress updates through the returned
+    /// channel. This is ideal for UI integration with async runtimes where you need
+    /// to display progress without blocking the main thread.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (future_result, progress_receiver) where:
+    /// - `future_result` is a future that yields the records
+    /// - `progress_receiver` is an async mpsc channel for receiving progress updates
+    ///
+    /// # Features
+    ///
+    /// This method is only available when the `tokio-runtime` feature is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
     /// use wpilog_parser::WpilogReader;
     /// use tokio::sync::mpsc;
     ///
@@ -233,14 +297,16 @@ impl WpilogReader {
     ///     Ok(())
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
     /// ```
+    #[cfg(feature = "tokio-runtime")]
     pub fn read_all_with_progress_async(
         self,
     ) -> (
         impl std::future::Future<Output = Result<Vec<WideRow>>>,
-        mpsc::Receiver<ProgressUpdate>,
+        tokio_mpsc::Receiver<ProgressUpdate>,
     ) {
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = tokio_mpsc::channel(64);
 
         let future = async move {
             let data = self.data;
@@ -279,18 +345,25 @@ impl WpilogReader {
         (future, rx)
     }
 
-    /// Read all records with progress reporting using a channel.
+    /// Read all records with progress reporting using a tokio channel.
     ///
-    /// This variant allows you to provide your own progress sender for more
-    /// control over how progress updates are handled.
+    /// This variant allows you to provide your own tokio progress sender for more
+    /// control over how progress updates are handled. This requires the `tokio-runtime`
+    /// feature to be enabled.
     ///
     /// # Arguments
     ///
-    /// * `tx` - Channel sender for progress updates
+    /// * `tx` - Tokio channel sender for progress updates
+    ///
+    /// # Features
+    ///
+    /// This method is only available when the `tokio-runtime` feature is enabled.
     ///
     /// # Examples
     ///
     /// ```no_run
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
     /// use wpilog_parser::WpilogReader;
     /// use tokio::sync::mpsc;
     ///
@@ -313,10 +386,12 @@ impl WpilogReader {
     ///     Ok(())
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
     /// ```
+    #[cfg(feature = "tokio-runtime")]
     pub async fn read_all_with_progress_channel(
         self,
-        tx: mpsc::Sender<ProgressUpdate>,
+        tx: tokio_mpsc::Sender<ProgressUpdate>,
     ) -> Result<Vec<WideRow>> {
         let data = self.data;
 

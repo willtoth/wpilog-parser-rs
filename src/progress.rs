@@ -1,7 +1,8 @@
-//! Progress tracking infrastructure for async read and write operations.
+//! Progress tracking infrastructure for read and write operations.
 //!
 //! This module provides types for reporting progress from long-running operations
-//! to UI threads or other progress consumers.
+//! to UI threads or other progress consumers. It supports both synchronous and
+//! asynchronous APIs depending on your needs.
 //!
 //! # Overview
 //!
@@ -18,12 +19,45 @@
 //! - **Complete**: Signals successful completion with total items processed
 //! - **Error**: Reports an error during operation
 //!
-//! # Usage with Channels
+//! # Usage with Synchronous Channels (No Dependencies)
 //!
-//! Progress updates are typically sent through a `tokio::sync::mpsc` channel:
+//! Progress updates work with `std::sync::mpsc` channels for zero-dependency progress tracking:
 //!
 //! ```no_run
-//! use wpilog_parser::{WpilogReader, ProgressUpdate};
+//! use wpilog_parser::WpilogReader;
+//! use std::thread;
+//!
+//! let reader = WpilogReader::from_file("data.wpilog")?;
+//! let (records, progress_rx) = reader.read_all_with_progress();
+//!
+//! // Optionally spawn a thread to monitor progress
+//! let progress_thread = thread::spawn(move || {
+//!     while let Ok(update) = progress_rx.recv() {
+//!         match update {
+//!             wpilog_parser::ProgressUpdate::Progress { percent, current_phase, .. } => {
+//!                 eprintln!("{}: {:.1}%", current_phase, percent);
+//!             }
+//!             wpilog_parser::ProgressUpdate::Complete { total_processed } => {
+//!                 eprintln!("Done! Processed {} items", total_processed);
+//!             }
+//!             _ => {}
+//!         }
+//!     }
+//! });
+//!
+//! eprintln!("Read {} records", records.len());
+//! progress_thread.join().ok();
+//! # Ok::<(), wpilog_parser::Error>(())
+//! ```
+//!
+//! # Usage with Async Channels (Requires `tokio-runtime` feature)
+//!
+//! Progress updates also work with `tokio::sync::mpsc` channels for async contexts:
+//!
+//! ```no_run
+//! # #[cfg(feature = "tokio-runtime")]
+//! # {
+//! use wpilog_parser::WpilogReader;
 //! use tokio::sync::mpsc;
 //!
 //! #[tokio::main]
@@ -35,13 +69,10 @@
 //!     tokio::spawn(async move {
 //!         while let Some(update) = progress_rx.recv().await {
 //!             match update {
-//!                 ProgressUpdate::Started { phase, total } => {
-//!                     eprintln!("{}: {} items", phase, total);
-//!                 }
-//!                 ProgressUpdate::Progress { percent, current_phase, .. } => {
+//!                 wpilog_parser::ProgressUpdate::Progress { percent, current_phase, .. } => {
 //!                     eprintln!("{}: {:.1}%", current_phase, percent);
 //!                 }
-//!                 ProgressUpdate::Complete { total_processed } => {
+//!                 wpilog_parser::ProgressUpdate::Complete { total_processed } => {
 //!                     eprintln!("Done! Processed {} items", total_processed);
 //!                 }
 //!                 _ => {}
@@ -50,9 +81,11 @@
 //!     });
 //!
 //!     let records = result.await?;
+//!     eprintln!("Read {} records", records.len());
 //!     Ok(())
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # }
 //! ```
 //!
 //! # Thread-Safe Progress Tracking
@@ -93,7 +126,7 @@ use std::sync::{Arc, Mutex};
 ///     percent: 45.5,
 ///     processed: 45000,
 ///     total: 100000,
-///     current_phase: "Reading records",
+///     current_phase: "Reading records".to_string(),
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -104,10 +137,7 @@ pub enum ProgressUpdate {
     ///
     /// * `phase` - Descriptive name of the current phase
     /// * `total` - Total items/bytes to process
-    Started {
-        phase: String,
-        total: u64,
-    },
+    Started { phase: String, total: u64 },
 
     /// Progress update during processing.
     ///
@@ -130,24 +160,17 @@ pub enum ProgressUpdate {
     ///
     /// * `phase` - Name of the new phase
     /// * `percent` - Overall completion percentage
-    PhaseChanged {
-        phase: String,
-        percent: f32,
-    },
+    PhaseChanged { phase: String, percent: f32 },
 
     /// Operation completed successfully.
-    Complete {
-        total_processed: u64,
-    },
+    Complete { total_processed: u64 },
 
     /// Operation encountered an error.
     ///
     /// # Fields
     ///
     /// * `message` - Error description
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Thread-safe progress tracker for long-running operations.
@@ -165,7 +188,7 @@ pub enum ProgressUpdate {
 ///
 /// for i in 0..100_000 {
 ///     // Do work...
-///     tracker.increment(1);
+///     tracker.increment();
 ///
 ///     if i % 1000 == 0 {
 ///         let percent = tracker.percent();

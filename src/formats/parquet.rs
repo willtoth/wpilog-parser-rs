@@ -1,8 +1,8 @@
 use anyhow::Result;
 use arrow::array::{
-    ArrayRef, BooleanArray, Float32Array, Float64Array, Int64Array, RecordBatch,
-    StringArray, UInt32Array, ListBuilder, Float64Builder, Int64Builder, Float32Builder,
-    BooleanBuilder, StringBuilder,
+    ArrayRef, BooleanArray, BooleanBuilder, Float32Array, Float32Builder, Float64Array,
+    Float64Builder, Int64Array, Int64Builder, ListBuilder, RecordBatch, StringArray, StringBuilder,
+    UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use log::info;
@@ -11,8 +11,8 @@ use parquet::file::properties::WriterProperties;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::path::Path;
+use std::sync::mpsc;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 use crate::models::WideRow;
 use crate::progress::ProgressUpdate;
@@ -51,8 +51,8 @@ impl ParquetFormatter {
                 chunk.len()
             );
 
-            let output_path = Path::new(&self.output_directory)
-                .join(format!("file_part{:03}.parquet", i));
+            let output_path =
+                Path::new(&self.output_directory).join(format!("file_part{:03}.parquet", i));
 
             self.write_chunk_to_parquet(chunk, &output_path)?;
         }
@@ -84,7 +84,7 @@ impl ParquetFormatter {
         let total_rows = rows.len() as u64;
 
         // Send started message
-        let _ = tx.blocking_send(ProgressUpdate::Started {
+        let _ = tx.send(ProgressUpdate::Started {
             phase: "Writing Parquet files".to_string(),
             total: total_rows,
         });
@@ -104,11 +104,11 @@ impl ParquetFormatter {
                 chunk.len()
             );
 
-            let output_path = Path::new(&self.output_directory)
-                .join(format!("file_part{:03}.parquet", i));
+            let output_path =
+                Path::new(&self.output_directory).join(format!("file_part{:03}.parquet", i));
 
             if let Err(e) = self.write_chunk_to_parquet(chunk, &output_path) {
-                let _ = tx.blocking_send(ProgressUpdate::Error {
+                let _ = tx.send(ProgressUpdate::Error {
                     message: format!("Failed to write chunk {}: {}", i, e),
                 });
                 return Err(e);
@@ -117,7 +117,7 @@ impl ParquetFormatter {
             rows_processed += chunk.len() as u64;
             let percent = (rows_processed as f32 / total_rows as f32) * 100.0;
 
-            let _ = tx.blocking_send(ProgressUpdate::Progress {
+            let _ = tx.send(ProgressUpdate::Progress {
                 percent,
                 processed: rows_processed,
                 total: total_rows,
@@ -126,7 +126,7 @@ impl ParquetFormatter {
         }
 
         info!("All chunks have been written");
-        let _ = tx.blocking_send(ProgressUpdate::Complete {
+        let _ = tx.send(ProgressUpdate::Complete {
             total_processed: rows_processed,
         });
 
@@ -146,7 +146,10 @@ impl ParquetFormatter {
 
         // Add dynamic fields with inferred types (already sorted)
         for col_name in &all_columns {
-            let data_type = column_types.get(col_name).cloned().unwrap_or(DataType::Utf8);
+            let data_type = column_types
+                .get(col_name)
+                .cloned()
+                .unwrap_or(DataType::Utf8);
             fields.push(Field::new(col_name.as_str(), data_type, true));
         }
 
@@ -175,7 +178,10 @@ impl ParquetFormatter {
 
         // Add dynamic columns with proper types
         for col_name in &all_columns {
-            let data_type = column_types.get(col_name).cloned().unwrap_or(DataType::Utf8);
+            let data_type = column_types
+                .get(col_name)
+                .cloned()
+                .unwrap_or(DataType::Utf8);
             let array = self.build_typed_array(rows, col_name, &data_type)?;
             arrays.push(array);
         }
@@ -192,7 +198,10 @@ impl ParquetFormatter {
         Ok(())
     }
 
-    fn infer_schema_single_pass(&self, rows: &[WideRow]) -> (Vec<String>, HashMap<String, DataType>) {
+    fn infer_schema_single_pass(
+        &self,
+        rows: &[WideRow],
+    ) -> (Vec<String>, HashMap<String, DataType>) {
         let mut column_types = HashMap::new();
         let mut column_order = Vec::new();
 
@@ -219,21 +228,33 @@ impl ParquetFormatter {
                         serde_json::Value::Array(arr) => {
                             if let Some(first) = arr.first() {
                                 match first {
-                                    serde_json::Value::Bool(_) => {
-                                        DataType::List(Arc::new(Field::new("item", DataType::Boolean, true)))
-                                    }
+                                    serde_json::Value::Bool(_) => DataType::List(Arc::new(
+                                        Field::new("item", DataType::Boolean, true),
+                                    )),
                                     serde_json::Value::Number(n) => {
                                         if n.is_f64() {
-                                            DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+                                            DataType::List(Arc::new(Field::new(
+                                                "item",
+                                                DataType::Float64,
+                                                true,
+                                            )))
                                         } else if n.is_i64() {
-                                            DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
+                                            DataType::List(Arc::new(Field::new(
+                                                "item",
+                                                DataType::Int64,
+                                                true,
+                                            )))
                                         } else {
-                                            DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+                                            DataType::List(Arc::new(Field::new(
+                                                "item",
+                                                DataType::Float64,
+                                                true,
+                                            )))
                                         }
                                     }
-                                    serde_json::Value::String(_) => {
-                                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
-                                    }
+                                    serde_json::Value::String(_) => DataType::List(Arc::new(
+                                        Field::new("item", DataType::Utf8, true),
+                                    )),
                                     _ => DataType::Utf8, // Complex nested types as JSON
                                 }
                             } else {
@@ -242,7 +263,7 @@ impl ParquetFormatter {
                             }
                         }
                         serde_json::Value::Object(_) => DataType::Utf8, // Store JSON objects as strings
-                        serde_json::Value::Null => continue, // Skip nulls
+                        serde_json::Value::Null => continue,            // Skip nulls
                     };
                     column_types.insert(col_name.clone(), data_type);
                     column_order.push(col_name.clone());
@@ -256,32 +277,31 @@ impl ParquetFormatter {
         (column_order, column_types)
     }
 
-    fn build_typed_array(&self, rows: &[WideRow], col_name: &str, data_type: &DataType) -> Result<ArrayRef> {
+    fn build_typed_array(
+        &self,
+        rows: &[WideRow],
+        col_name: &str,
+        data_type: &DataType,
+    ) -> Result<ArrayRef> {
         match data_type {
             DataType::Boolean => {
                 let values: Vec<Option<bool>> = rows
                     .iter()
-                    .map(|r| {
-                        r.data.get(col_name).and_then(|v| v.as_bool())
-                    })
+                    .map(|r| r.data.get(col_name).and_then(|v| v.as_bool()))
                     .collect();
                 Ok(Arc::new(BooleanArray::from(values)))
             }
             DataType::Int64 => {
                 let values: Vec<Option<i64>> = rows
                     .iter()
-                    .map(|r| {
-                        r.data.get(col_name).and_then(|v| v.as_i64())
-                    })
+                    .map(|r| r.data.get(col_name).and_then(|v| v.as_i64()))
                     .collect();
                 Ok(Arc::new(Int64Array::from(values)))
             }
             DataType::Float64 => {
                 let values: Vec<Option<f64>> = rows
                     .iter()
-                    .map(|r| {
-                        r.data.get(col_name).and_then(|v| v.as_f64())
-                    })
+                    .map(|r| r.data.get(col_name).and_then(|v| v.as_f64()))
                     .collect();
                 Ok(Arc::new(Float64Array::from(values)))
             }
@@ -289,7 +309,9 @@ impl ParquetFormatter {
                 let values: Vec<Option<f32>> = rows
                     .iter()
                     .map(|r| {
-                        r.data.get(col_name).and_then(|v| v.as_f64().map(|f| f as f32))
+                        r.data
+                            .get(col_name)
+                            .and_then(|v| v.as_f64().map(|f| f as f32))
                     })
                     .collect();
                 Ok(Arc::new(Float32Array::from(values)))
@@ -357,7 +379,9 @@ impl ParquetFormatter {
                             if let Some(value) = row.data.get(col_name) {
                                 if let Some(arr) = value.as_array() {
                                     for elem in arr {
-                                        builder.values().append_option(elem.as_f64().map(|f| f as f32));
+                                        builder
+                                            .values()
+                                            .append_option(elem.as_f64().map(|f| f as f32));
                                     }
                                     builder.append(true);
                                 } else {
@@ -392,7 +416,9 @@ impl ParquetFormatter {
                         let values: Vec<Option<String>> = rows
                             .iter()
                             .map(|r| {
-                                r.data.get(col_name).map(|v| serde_json::to_string(v).unwrap_or_default())
+                                r.data
+                                    .get(col_name)
+                                    .map(|v| serde_json::to_string(v).unwrap_or_default())
                             })
                             .collect();
                         Ok(Arc::new(StringArray::from(values)))

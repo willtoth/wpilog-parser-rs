@@ -5,7 +5,10 @@ use crate::formats::parquet::ParquetFormatter;
 use crate::models::WideRow;
 use crate::progress::ProgressUpdate;
 use std::path::Path;
-use tokio::sync::mpsc;
+use std::sync::mpsc;
+
+#[cfg(feature = "tokio-runtime")]
+use tokio::sync::mpsc as tokio_mpsc;
 
 /// Writer for outputting WPILog data to Apache Parquet format.
 ///
@@ -132,11 +135,11 @@ impl ParquetWriter {
         })
     }
 
-    /// Write records to Parquet with progress reporting through a channel.
+    /// Write records to Parquet with progress reporting through a blocking channel.
     ///
-    /// This method sends progress updates through the provided channel as each
-    /// chunk is written. This is ideal for UI integration where you need to display
-    /// write progress.
+    /// This method sends progress updates through the provided `std::sync::mpsc`
+    /// channel as each chunk is written. This is ideal for non-async contexts or
+    /// when you don't want tokio as a dependency.
     ///
     /// # Arguments
     ///
@@ -154,37 +157,33 @@ impl ParquetWriter {
     ///
     /// ```no_run
     /// use wpilog_parser::{WpilogReader, ParquetWriter};
-    /// use tokio::sync::mpsc;
+    /// use std::thread;
     ///
-    /// #[tokio::main]
-    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = WpilogReader::from_file("data.wpilog")?;
-    ///     let records = reader.read_all()?;
+    /// let reader = WpilogReader::from_file("data.wpilog")?;
+    /// let records = reader.read_all()?;
     ///
-    ///     let (tx, mut rx) = mpsc::channel(64);
+    /// let (tx, rx) = std::sync::mpsc::channel();
     ///
-    ///     // Spawn task to handle progress
-    ///     let progress_task = tokio::spawn(async move {
-    ///         while let Some(update) = rx.recv().await {
-    ///             match update {
-    ///                 wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
-    ///                     println!("Write progress: {:.1}%", percent);
-    ///                 }
-    ///                 wpilog_parser::ProgressUpdate::Complete { .. } => {
-    ///                     println!("Write complete!");
-    ///                 }
-    ///                 _ => {}
+    /// // Spawn thread to handle progress
+    /// let progress_thread = thread::spawn(move || {
+    ///     while let Ok(update) = rx.recv() {
+    ///         match update {
+    ///             wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+    ///                 println!("Write progress: {:.1}%", percent);
     ///             }
+    ///             wpilog_parser::ProgressUpdate::Complete { .. } => {
+    ///                 println!("Write complete!");
+    ///             }
+    ///             _ => {}
     ///         }
-    ///     });
+    ///     }
+    /// });
     ///
-    ///     let writer = ParquetWriter::new("./output").chunk_size(50_000);
-    ///     writer.write_with_progress(&records, tx)?;
+    /// let writer = ParquetWriter::new("./output").chunk_size(50_000);
+    /// writer.write_with_progress(&records, tx)?;
     ///
-    ///     progress_task.await?;
-    ///     Ok(())
-    /// }
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// progress_thread.join().ok();
+    /// # Ok::<(), wpilog_parser::Error>(())
     /// ```
     pub fn write_with_progress(
         self,
@@ -208,11 +207,12 @@ impl ParquetWriter {
         })
     }
 
-    /// Write records asynchronously with progress reporting.
+    /// Write records asynchronously with progress reporting using tokio.
     ///
-    /// This method spawns a blocking task to write Parquet files and sends
-    /// progress updates through the returned channel. This is ideal for UI
-    /// integration where you don't want to block the async runtime.
+    /// This method requires the `tokio-runtime` feature and spawns a blocking task
+    /// to write Parquet files while sending progress updates through the returned
+    /// channel. This is ideal for UI integration with async runtimes where you don't
+    /// want to block the async runtime.
     ///
     /// # Arguments
     ///
@@ -221,12 +221,18 @@ impl ParquetWriter {
     /// # Returns
     ///
     /// A tuple of (future_result, progress_receiver) where:
-    /// - `future_result` is a boxed future that yields WriteStats
-    /// - `progress_receiver` is an mpsc channel for receiving progress updates
+    /// - `future_result` is a future that yields WriteStats
+    /// - `progress_receiver` is an async mpsc channel for receiving progress updates
+    ///
+    /// # Features
+    ///
+    /// This method is only available when the `tokio-runtime` feature is enabled.
     ///
     /// # Examples
     ///
     /// ```no_run
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
     /// use wpilog_parser::{WpilogReader, ParquetWriter};
     ///
     /// #[tokio::main]
@@ -254,15 +260,17 @@ impl ParquetWriter {
     ///     Ok(())
     /// }
     /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
     /// ```
+    #[cfg(feature = "tokio-runtime")]
     pub fn write_with_progress_async(
         self,
         records: &[WideRow],
     ) -> (
         impl std::future::Future<Output = Result<WriteStats>>,
-        mpsc::Receiver<ProgressUpdate>,
+        tokio_mpsc::Receiver<ProgressUpdate>,
     ) {
-        let (tx, rx) = mpsc::channel(64);
+        let (tx, rx) = tokio_mpsc::channel(64);
         let output_dir = self.output_directory.clone();
         let records = records.to_vec(); // Clone records for the blocking task
 
@@ -272,7 +280,19 @@ impl ParquetWriter {
                 let records = records.clone();
                 move || {
                     let writer = ParquetWriter::new(output_dir);
-                    writer.write_with_progress(&records, tx)
+                    // Need to convert tokio_mpsc sender to std::sync::mpsc for the blocking task
+                    // For now, we'll use the sync progress method and wrap it
+                    // This is a known limitation - we can't use tokio channels in blocking context
+                    let (sync_tx, sync_rx) = std::sync::mpsc::channel();
+
+                    let result = writer.write_with_progress(&records, sync_tx);
+
+                    // Forward progress updates from sync channel to tokio channel
+                    while let Ok(update) = sync_rx.recv() {
+                        let _ = tx.blocking_send(update);
+                    }
+
+                    result
                 }
             })
             .await
@@ -280,6 +300,92 @@ impl ParquetWriter {
         };
 
         (future, rx)
+    }
+
+    /// Write records asynchronously with progress reporting using a tokio channel.
+    ///
+    /// This variant allows you to provide your own tokio progress sender for more
+    /// control over how progress updates are handled. This requires the `tokio-runtime`
+    /// feature to be enabled.
+    ///
+    /// # Arguments
+    ///
+    /// * `records` - The WPILog records to write
+    /// * `tx` - Tokio channel sender for progress updates
+    ///
+    /// # Features
+    ///
+    /// This method is only available when the `tokio-runtime` feature is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "tokio-runtime")]
+    /// # {
+    /// use wpilog_parser::{WpilogReader, ParquetWriter};
+    /// use tokio::sync::mpsc;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let reader = WpilogReader::from_file("data.wpilog")?;
+    ///     let records = reader.read_all()?;
+    ///
+    ///     let (tx, mut rx) = mpsc::channel(64);
+    ///
+    ///     // Spawn task to handle progress
+    ///     let progress_task = tokio::spawn(async move {
+    ///         while let Some(update) = rx.recv().await {
+    ///             match update {
+    ///                 wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+    ///                     println!("Write progress: {:.1}%", percent);
+    ///                 }
+    ///                 wpilog_parser::ProgressUpdate::Complete { .. } => {
+    ///                     println!("Write complete!");
+    ///                 }
+    ///                 _ => {}
+    ///             }
+    ///         }
+    ///     });
+    ///
+    ///     let writer = ParquetWriter::new("./output").chunk_size(50_000);
+    ///     writer.write_with_progress_channel(&records, tx).await?;
+    ///
+    ///     progress_task.await?;
+    ///     Ok(())
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// # }
+    /// ```
+    #[cfg(feature = "tokio-runtime")]
+    pub async fn write_with_progress_channel(
+        self,
+        records: &[WideRow],
+        tx: tokio_mpsc::Sender<ProgressUpdate>,
+    ) -> Result<WriteStats> {
+        let output_dir = self.output_directory.clone();
+        let records = records.to_vec();
+        let chunk_size = self.chunk_size;
+
+        tokio::task::spawn_blocking({
+            let tx = tx.clone();
+            let records = records.clone();
+            move || {
+                let writer = ParquetWriter::new(output_dir);
+                // Convert tokio channel to sync for the blocking task
+                let (sync_tx, sync_rx) = std::sync::mpsc::channel();
+
+                let result = writer.write_with_progress(&records, sync_tx);
+
+                // Forward progress updates from sync channel to tokio channel
+                while let Ok(update) = sync_rx.recv() {
+                    let _ = tx.blocking_send(update);
+                }
+
+                result
+            }
+        })
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?
     }
 }
 
