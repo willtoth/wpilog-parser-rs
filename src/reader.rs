@@ -4,12 +4,11 @@ use crate::datalog::DataLogReader;
 use crate::error::{Error, Result};
 use crate::formatter::Formatter;
 use crate::models::{OutputFormat, WideRow};
-use crate::progress::{ProgressReceiver, ProgressUpdate};
+use crate::progress::{ProgressSender, ProgressUpdate};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
 
 #[cfg(feature = "tokio-runtime")]
 use crate::progress::AsyncProgressReceiver;
@@ -187,65 +186,75 @@ impl WpilogReader {
         DataLogReader::new(&self.data)
     }
 
-    /// Read all records with progress reporting using a blocking channel.
+    /// Read all records with progress reporting.
     ///
-    /// This method uses the standard library's `std::sync::mpsc` channels to send
-    /// progress updates. The actual reading happens synchronously and blocks until
-    /// complete. This is suitable for non-async contexts and doesn't require any
-    /// runtime dependencies.
+    /// This method accepts a [`ProgressSender`] and sends progress updates as the
+    /// file is being read. This is designed to be run in a separate thread so the
+    /// calling thread can monitor progress.
+    ///
+    /// # Arguments
+    ///
+    /// * `progress` - A channel sender for sending progress updates
     ///
     /// # Returns
     ///
-    /// A tuple of (records, progress_receiver) where:
-    /// - `records` is a vector of the read records (after completion)
-    /// - `progress_receiver` is an mpsc channel for receiving progress updates
+    /// A `Result` containing the parsed records on success.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// use wpilog_parser::WpilogReader;
+    /// use std::sync::mpsc;
     /// use std::thread;
     ///
     /// let reader = WpilogReader::from_file("data.wpilog")?;
-    /// let (records, progress_rx) = reader.read_all_with_progress();
+    /// let (tx, rx) = mpsc::channel();
     ///
-    /// // Handle progress updates in a separate thread if desired
-    /// let progress_thread = thread::spawn(move || {
-    ///     while let Ok(update) = progress_rx.recv() {
-    ///         match update {
-    ///             wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
-    ///                 println!("Progress: {:.1}%", percent);
-    ///             }
-    ///             wpilog_parser::ProgressUpdate::Complete { .. } => {
-    ///                 println!("Done!");
-    ///             }
-    ///             _ => {}
-    ///         }
-    ///     }
+    /// // Spawn thread to do the reading
+    /// let handle = thread::spawn(move || {
+    ///     reader.read_all_with_progress(tx)
     /// });
     ///
+    /// // Monitor progress in main thread
+    /// for update in rx {
+    ///     match update {
+    ///         wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+    ///             println!("Progress: {:.1}%", percent);
+    ///         }
+    ///         wpilog_parser::ProgressUpdate::Complete { .. } => {
+    ///             println!("Done!");
+    ///             break;
+    ///         }
+    ///         _ => {}
+    ///     }
+    /// }
+    ///
+    /// let records = handle.join().unwrap()?;
     /// println!("Read {} records", records.len());
-    /// progress_thread.join().ok();
     /// # Ok::<(), wpilog_parser::Error>(())
     /// ```
-    pub fn read_all_with_progress(self) -> (Vec<WideRow>, ProgressReceiver) {
-        let (tx, rx) = mpsc::channel();
+    pub fn read_all_with_progress(self, progress: ProgressSender) -> Result<Vec<WideRow>> {
+        // Send started notification
+        let _ = progress.send(ProgressUpdate::Started {
+            phase: "Reading WPILog file".to_string(),
+            total: 0, // We don't know the total yet
+        });
 
         // Run the actual reading
         let result = self.read_all();
 
         match result {
             Ok(records) => {
-                let _ = tx.send(ProgressUpdate::Complete {
+                let _ = progress.send(ProgressUpdate::Complete {
                     total_processed: records.len() as u64,
                 });
-                (records, rx)
+                Ok(records)
             }
             Err(e) => {
-                let _ = tx.send(ProgressUpdate::Error {
+                let _ = progress.send(ProgressUpdate::Error {
                     message: e.to_string(),
                 });
-                (vec![], rx)
+                Err(e)
             }
         }
     }

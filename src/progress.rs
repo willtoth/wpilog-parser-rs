@@ -25,28 +25,33 @@
 //!
 //! ```no_run
 //! use wpilog_parser::WpilogReader;
+//! use std::sync::mpsc;
 //! use std::thread;
 //!
 //! let reader = WpilogReader::from_file("data.wpilog")?;
-//! let (records, progress_rx) = reader.read_all_with_progress();
+//! let (tx, rx) = mpsc::channel();
 //!
-//! // Optionally spawn a thread to monitor progress
-//! let progress_thread = thread::spawn(move || {
-//!     while let Ok(update) = progress_rx.recv() {
-//!         match update {
-//!             wpilog_parser::ProgressUpdate::Progress { percent, current_phase, .. } => {
-//!                 eprintln!("{}: {:.1}%", current_phase, percent);
-//!             }
-//!             wpilog_parser::ProgressUpdate::Complete { total_processed } => {
-//!                 eprintln!("Done! Processed {} items", total_processed);
-//!             }
-//!             _ => {}
-//!         }
-//!     }
+//! // Spawn thread to do the work
+//! let handle = thread::spawn(move || {
+//!     reader.read_all_with_progress(tx)
 //! });
 //!
+//! // Monitor progress in main thread
+//! for update in rx {
+//!     match update {
+//!         wpilog_parser::ProgressUpdate::Progress { percent, current_phase, .. } => {
+//!             eprintln!("{}: {:.1}%", current_phase, percent);
+//!         }
+//!         wpilog_parser::ProgressUpdate::Complete { total_processed } => {
+//!             eprintln!("Done! Processed {} items", total_processed);
+//!             break;
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//!
+//! let records = handle.join().unwrap()?;
 //! eprintln!("Read {} records", records.len());
-//! progress_thread.join().ok();
 //! # Ok::<(), wpilog_parser::Error>(())
 //! ```
 //!
@@ -305,21 +310,28 @@ impl ProgressTracker {
     }
 }
 
-/// Type alias for receiving progress updates in synchronous contexts.
+/// Type alias for sending progress updates in synchronous contexts.
 ///
-/// This is a standard library `mpsc::Receiver` that receives [`ProgressUpdate`] messages.
-/// Use this to monitor progress from long-running operations without requiring async.
+/// This is a standard library `mpsc::Sender` that sends [`ProgressUpdate`] messages.
+/// Pass this to operations that support progress tracking.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use wpilog_parser::WpilogReader;
+/// use wpilog_parser::{WpilogReader, ProgressSender};
+/// use std::sync::mpsc;
+/// use std::thread;
 ///
 /// let reader = WpilogReader::from_file("data.wpilog")?;
-/// let (records, progress_rx) = reader.read_all_with_progress();
+/// let (tx, rx) = mpsc::channel();
 ///
-/// // Iterate over progress updates
-/// for update in progress_rx {
+/// // Spawn thread to do the work
+/// let handle = thread::spawn(move || {
+///     reader.read_all_with_progress(tx)
+/// });
+///
+/// // Monitor progress in main thread
+/// for update in rx {
 ///     match update {
 ///         wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
 ///             println!("Progress: {:.1}%", percent);
@@ -332,9 +344,16 @@ impl ProgressTracker {
 ///     }
 /// }
 ///
+/// let records = handle.join().unwrap()?;
 /// println!("Read {} records", records.len());
 /// # Ok::<(), wpilog_parser::Error>(())
 /// ```
+pub type ProgressSender = std::sync::mpsc::Sender<ProgressUpdate>;
+
+/// Type alias for receiving progress updates in synchronous contexts.
+///
+/// This is a standard library `mpsc::Receiver` that receives [`ProgressUpdate`] messages.
+/// Use this to monitor progress from long-running operations without requiring async.
 pub type ProgressReceiver = std::sync::mpsc::Receiver<ProgressUpdate>;
 
 #[cfg(feature = "tokio-runtime")]

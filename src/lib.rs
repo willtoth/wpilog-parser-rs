@@ -89,37 +89,43 @@
 //!
 //! ```no_run
 //! use wpilog_parser::WpilogReader;
+//! use std::sync::mpsc;
 //! use std::thread;
 //!
 //! let reader = WpilogReader::from_file("data.wpilog")?;
-//! let (records, progress_rx) = reader.read_all_with_progress();
+//! let (tx, rx) = mpsc::channel();
 //!
-//! // Optionally spawn a thread to handle progress updates
-//! let progress_thread = thread::spawn(move || {
-//!     while let Ok(update) = progress_rx.recv() {
-//!         match update {
-//!             wpilog_parser::ProgressUpdate::Progress {
-//!                 percent,
-//!                 processed,
-//!                 total,
-//!                 current_phase,
-//!             } => {
-//!                 println!("{}: {:.1}% ({}/{})", current_phase, percent, processed, total);
-//!                 // Update UI progress bar here
-//!             }
-//!             wpilog_parser::ProgressUpdate::Complete { total_processed } => {
-//!                 println!("Completed! Processed {} items", total_processed);
-//!             }
-//!             wpilog_parser::ProgressUpdate::Error { message } => {
-//!                 eprintln!("Error: {}", message);
-//!             }
-//!             _ => {}
-//!         }
-//!     }
+//! // Spawn thread to do the work
+//! let handle = thread::spawn(move || {
+//!     reader.read_all_with_progress(tx)
 //! });
 //!
+//! // Monitor progress in main thread
+//! for update in rx {
+//!     match update {
+//!         wpilog_parser::ProgressUpdate::Progress {
+//!             percent,
+//!             processed,
+//!             total,
+//!             current_phase,
+//!         } => {
+//!             println!("{}: {:.1}% ({}/{})", current_phase, percent, processed, total);
+//!             // Update UI progress bar here
+//!         }
+//!         wpilog_parser::ProgressUpdate::Complete { total_processed } => {
+//!             println!("Completed! Processed {} items", total_processed);
+//!             break;
+//!         }
+//!         wpilog_parser::ProgressUpdate::Error { message } => {
+//!             eprintln!("Error: {}", message);
+//!             break;
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//!
+//! let records = handle.join().unwrap()?;
 //! println!("Read {} records", records.len());
-//! progress_thread.join().ok();
 //! # Ok::<(), wpilog_parser::Error>(())
 //! ```
 //!
@@ -261,7 +267,7 @@ pub mod writer;
 
 // Re-export commonly used types
 pub use error::{Error, Result};
-pub use progress::{ProgressReceiver, ProgressTracker, ProgressUpdate};
+pub use progress::{ProgressReceiver, ProgressSender, ProgressTracker, ProgressUpdate};
 pub use reader::{WpilogReader, WpilogReaderBuilder};
 pub use writer::{ParquetWriter, ParquetWriterBuilder, WriteStats};
 
