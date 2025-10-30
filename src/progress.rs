@@ -305,6 +305,78 @@ impl ProgressTracker {
     }
 }
 
+/// Type alias for receiving progress updates in synchronous contexts.
+///
+/// This is a standard library `mpsc::Receiver` that receives [`ProgressUpdate`] messages.
+/// Use this to monitor progress from long-running operations without requiring async.
+///
+/// # Examples
+///
+/// ```no_run
+/// use wpilog_parser::WpilogReader;
+///
+/// let reader = WpilogReader::from_file("data.wpilog")?;
+/// let (records, progress_rx) = reader.read_all_with_progress();
+///
+/// // Iterate over progress updates
+/// for update in progress_rx {
+///     match update {
+///         wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+///             println!("Progress: {:.1}%", percent);
+///         }
+///         wpilog_parser::ProgressUpdate::Complete { .. } => {
+///             println!("Done!");
+///             break;
+///         }
+///         _ => {}
+///     }
+/// }
+///
+/// println!("Read {} records", records.len());
+/// # Ok::<(), wpilog_parser::Error>(())
+/// ```
+pub type ProgressReceiver = std::sync::mpsc::Receiver<ProgressUpdate>;
+
+#[cfg(feature = "tokio-runtime")]
+/// Type alias for receiving progress updates in async contexts.
+///
+/// This is a `tokio::sync::mpsc::Receiver` that receives [`ProgressUpdate`] messages.
+/// Use this to monitor progress from long-running operations in async/await code.
+///
+/// This type is only available when the `tokio-runtime` feature is enabled.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[cfg(feature = "tokio-runtime")]
+/// # {
+/// use wpilog_parser::WpilogReader;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let reader = WpilogReader::from_file("data.wpilog")?;
+///     let (result, mut progress_rx) = reader.read_all_with_progress_async();
+///
+///     // Spawn task to monitor progress
+///     tokio::spawn(async move {
+///         while let Some(update) = progress_rx.recv().await {
+///             match update {
+///                 wpilog_parser::ProgressUpdate::Progress { percent, .. } => {
+///                     println!("Progress: {:.1}%", percent);
+///                 }
+///                 _ => {}
+///             }
+///         }
+///     });
+///
+///     let records = result.await?;
+///     Ok(())
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// # }
+/// ```
+pub type AsyncProgressReceiver = tokio::sync::mpsc::Receiver<ProgressUpdate>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

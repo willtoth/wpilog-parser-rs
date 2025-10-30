@@ -261,9 +261,12 @@ pub mod writer;
 
 // Re-export commonly used types
 pub use error::{Error, Result};
-pub use progress::{ProgressTracker, ProgressUpdate};
+pub use progress::{ProgressReceiver, ProgressTracker, ProgressUpdate};
 pub use reader::{WpilogReader, WpilogReaderBuilder};
 pub use writer::{ParquetWriter, ParquetWriterBuilder, WriteStats};
+
+#[cfg(feature = "tokio-runtime")]
+pub use progress::AsyncProgressReceiver;
 
 // Re-export models for users who need them
 pub use models::{OutputFormat, WideRow};

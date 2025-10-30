@@ -4,12 +4,15 @@ use crate::datalog::DataLogReader;
 use crate::error::{Error, Result};
 use crate::formatter::Formatter;
 use crate::models::{OutputFormat, WideRow};
-use crate::progress::ProgressUpdate;
+use crate::progress::{ProgressReceiver, ProgressUpdate};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+
+#[cfg(feature = "tokio-runtime")]
+use crate::progress::AsyncProgressReceiver;
 
 #[cfg(feature = "tokio-runtime")]
 use tokio::sync::mpsc as tokio_mpsc;
@@ -225,7 +228,7 @@ impl WpilogReader {
     /// progress_thread.join().ok();
     /// # Ok::<(), wpilog_parser::Error>(())
     /// ```
-    pub fn read_all_with_progress(self) -> (Vec<WideRow>, mpsc::Receiver<ProgressUpdate>) {
+    pub fn read_all_with_progress(self) -> (Vec<WideRow>, ProgressReceiver) {
         let (tx, rx) = mpsc::channel();
 
         // Run the actual reading
@@ -304,7 +307,7 @@ impl WpilogReader {
         self,
     ) -> (
         impl std::future::Future<Output = Result<Vec<WideRow>>>,
-        tokio_mpsc::Receiver<ProgressUpdate>,
+        AsyncProgressReceiver,
     ) {
         let (tx, rx) = tokio_mpsc::channel(64);
 
