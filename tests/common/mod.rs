@@ -6,6 +6,7 @@ pub struct WpilogBuilder {
     data: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl WpilogBuilder {
     /// Create a new WPILOG builder with default header (version 1.0, no extra header)
     pub fn new() -> Self {
@@ -43,7 +44,9 @@ impl WpilogBuilder {
         let mut payload = Vec::new();
         payload.push(0); // Start control type
         payload.write_u32::<LittleEndian>(entry_id).unwrap();
-        payload.write_u32::<LittleEndian>(name.len() as u32).unwrap();
+        payload
+            .write_u32::<LittleEndian>(name.len() as u32)
+            .unwrap();
         payload.extend_from_slice(name.as_bytes());
         payload
             .write_u32::<LittleEndian>(type_str.len() as u32)
@@ -121,12 +124,7 @@ impl WpilogBuilder {
     }
 
     /// Add a boolean array record
-    pub fn boolean_array_record(
-        mut self,
-        entry_id: u32,
-        timestamp: u64,
-        values: &[bool],
-    ) -> Self {
+    pub fn boolean_array_record(mut self, entry_id: u32, timestamp: u64, values: &[bool]) -> Self {
         let payload: Vec<u8> = values.iter().map(|&b| if b { 1 } else { 0 }).collect();
         self.write_record(entry_id, timestamp, &payload);
         self
@@ -163,12 +161,7 @@ impl WpilogBuilder {
     }
 
     /// Add a string array record
-    pub fn string_array_record(
-        mut self,
-        entry_id: u32,
-        timestamp: u64,
-        values: &[&str],
-    ) -> Self {
+    pub fn string_array_record(mut self, entry_id: u32, timestamp: u64, values: &[&str]) -> Self {
         let mut payload = Vec::new();
         payload
             .write_u32::<LittleEndian>(values.len() as u32)
@@ -189,7 +182,7 @@ impl WpilogBuilder {
 
     /// Add a struct schema record
     pub fn struct_schema_record(
-        mut self,
+        self,
         timestamp: u64,
         entry_id: u32,
         schema_name: &str,

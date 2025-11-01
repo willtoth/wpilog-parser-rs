@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::datalog::{DataLogReader, DataLogRecord, StartRecordData};
 use crate::models::{DerivedSchema, DerivedSchemaColumn, LongRow, OutputFormat, WideRow};
+use crate::progress::{ProgressSender, ProgressUpdate};
 
 static LOOP_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -56,11 +57,7 @@ pub struct Formatter {
 }
 
 impl Formatter {
-    pub fn new(
-        wpilog_file: String,
-        output_directory: String,
-        output_format: OutputFormat,
-    ) -> Self {
+    pub fn new(wpilog_file: String, output_directory: String, output_format: OutputFormat) -> Self {
         Self {
             wpilog_file,
             output_directory,
@@ -120,7 +117,10 @@ impl Formatter {
                 row.insert(sanitized_name, json!(record.get_string_array()?));
             }
             "msgpack" => {
-                row.insert(sanitized_name, json!(format!("{:?}", record.get_msgpack()?)));
+                row.insert(
+                    sanitized_name,
+                    json!(format!("{:?}", record.get_msgpack()?)),
+                );
             }
             "structschema" => {
                 let _columns = convert_struct_schema_to_columns(&record.get_string()?)?;
@@ -151,7 +151,8 @@ impl Formatter {
                 if record.data.is_empty() {
                     row.insert(entry.name.clone(), json!(null));
                 } else {
-                    let (struct_data, _bytes_consumed) = unpack_struct(&schema.columns, &record.data, 0, "", &self.struct_schemas)?;
+                    let (struct_data, _bytes_consumed) =
+                        unpack_struct(&schema.columns, &record.data, 0, "", &self.struct_schemas)?;
                     row.insert(entry.name.clone(), json!(struct_data));
                 }
             }
@@ -207,10 +208,15 @@ impl Formatter {
     pub fn read_wpilog(&mut self, infer_schema_only: bool) -> Result<Vec<WideRow>> {
         let file = File::open(&self.wpilog_file)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        self.read_wpilog_from_bytes(&mmap, infer_schema_only)
+        self.read_wpilog_from_bytes(&mmap, infer_schema_only, None)
     }
 
-    pub fn read_wpilog_from_bytes(&mut self, data: &[u8], infer_schema_only: bool) -> Result<Vec<WideRow>> {
+    pub fn read_wpilog_from_bytes(
+        &mut self,
+        data: &[u8],
+        infer_schema_only: bool,
+        progress: Option<&ProgressSender>,
+    ) -> Result<Vec<WideRow>> {
         let mut records = Vec::new();
         let mut entries: HashMap<u32, StartRecordData> = HashMap::new();
 
@@ -220,8 +226,43 @@ impl Formatter {
             return Err(anyhow!("Not a valid WPILOG file"));
         }
 
+        // Setup progress tracking
+        let data_size = data.len() as u64;
+        let mut record_count = 0u64;
+        let progress_interval = 5000; // Report every 5000 records
+        let mut next_progress_report = progress_interval;
+
         for record_result in reader.records()? {
             let record = record_result?;
+            record_count += 1;
+
+            // Estimate bytes processed (rough approximation based on position in file)
+            // This assumes records are roughly evenly sized
+            if let Some(prog) = progress {
+                if record_count >= next_progress_report {
+                    // Estimate percentage based on record count
+                    // We don't know total records ahead of time, so we estimate based on file size
+                    // Assume average record is ~100 bytes (rough estimate)
+                    let estimated_total_records = data_size / 100;
+                    let percent =
+                        (record_count as f32 / estimated_total_records as f32 * 100.0).min(99.0);
+
+                    let phase = if infer_schema_only {
+                        "Inferring schema"
+                    } else {
+                        "Reading records"
+                    };
+
+                    let _ = prog.send(ProgressUpdate::Progress {
+                        percent,
+                        processed: record_count,
+                        total: estimated_total_records,
+                        current_phase: phase.to_string(),
+                    });
+
+                    next_progress_report += progress_interval;
+                }
+            }
 
             if record.is_start() {
                 let data = record.get_start_data()?;
@@ -347,11 +388,13 @@ fn unpack_struct(
                 let nested_schema = schemas
                     .iter()
                     .find(|s| {
-                        s.name.strip_prefix("struct:") == Some(&col.type_name) || s.name == col.type_name
+                        s.name.strip_prefix("struct:") == Some(&col.type_name)
+                            || s.name == col.type_name
                     })
                     .ok_or_else(|| anyhow!("No nested schema found for: {}", col.type_name))?;
 
-                let (nested_result, new_offset) = unpack_struct(&nested_schema.columns, data, offset, &key, schemas)?;
+                let (nested_result, new_offset) =
+                    unpack_struct(&nested_schema.columns, data, offset, &key, schemas)?;
                 result.extend(nested_result);
                 offset = new_offset;
             }
@@ -360,4 +403,3 @@ fn unpack_struct(
 
     Ok((result, offset))
 }
-

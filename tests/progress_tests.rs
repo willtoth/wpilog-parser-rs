@@ -316,7 +316,7 @@ fn test_sync_progress_with_std_mpsc() {
         })
         .unwrap();
 
-        for i in 1..=10 {
+        for _i in 1..=10 {
             thread::sleep(Duration::from_millis(5));
             tracker.increment_by(10);
 

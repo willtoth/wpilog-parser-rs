@@ -133,7 +133,7 @@ impl WpilogReader {
 
         // First pass: infer schema
         formatter
-            .read_wpilog_from_bytes(&self.data, true)
+            .read_wpilog_from_bytes(&self.data, true, None)
             .map_err(|e| Error::SchemaError(e.to_string()))?;
 
         // Reset loop count for second pass
@@ -141,7 +141,7 @@ impl WpilogReader {
 
         // Second pass: read data
         let records = formatter
-            .read_wpilog_from_bytes(&self.data, false)
+            .read_wpilog_from_bytes(&self.data, false, None)
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
         self.formatter = Some(formatter);
@@ -164,7 +164,7 @@ impl WpilogReader {
 
         // First pass: infer schema
         formatter
-            .read_wpilog_from_bytes(&self.data, true)
+            .read_wpilog_from_bytes(&self.data, true, None)
             .map_err(|e| Error::SchemaError(e.to_string()))?;
 
         // Reset loop count
@@ -172,7 +172,7 @@ impl WpilogReader {
 
         // Second pass: read data
         let records = formatter
-            .read_wpilog_from_bytes(&self.data, false)
+            .read_wpilog_from_bytes(&self.data, false, None)
             .map_err(|e| Error::ParseError(e.to_string()))?;
 
         Ok((records, formatter))
@@ -237,26 +237,42 @@ impl WpilogReader {
         // Send started notification
         let _ = progress.send(ProgressUpdate::Started {
             phase: "Reading WPILog file".to_string(),
-            total: 0, // We don't know the total yet
+            total: 100, // Report as percentage
         });
 
-        // Run the actual reading
-        let result = self.read_all();
+        // Reset global loop count
+        GLOBAL_LOOP_COUNT.store(0, Ordering::Relaxed);
 
-        match result {
-            Ok(records) => {
-                let _ = progress.send(ProgressUpdate::Complete {
-                    total_processed: records.len() as u64,
-                });
-                Ok(records)
-            }
-            Err(e) => {
+        let mut formatter = Formatter::new(String::new(), String::new(), OutputFormat::Wide);
+
+        // First pass: infer schema
+        formatter
+            .read_wpilog_from_bytes(&self.data, true, Some(&progress))
+            .map_err(|e| {
                 let _ = progress.send(ProgressUpdate::Error {
                     message: e.to_string(),
                 });
-                Err(e)
-            }
-        }
+                Error::SchemaError(e.to_string())
+            })?;
+
+        // Reset loop count for second pass
+        Formatter::reset_loop_count();
+
+        // Second pass: read data
+        let records = formatter
+            .read_wpilog_from_bytes(&self.data, false, Some(&progress))
+            .map_err(|e| {
+                let _ = progress.send(ProgressUpdate::Error {
+                    message: e.to_string(),
+                });
+                Error::ParseError(e.to_string())
+            })?;
+
+        let _ = progress.send(ProgressUpdate::Complete {
+            total_processed: records.len() as u64,
+        });
+
+        Ok(records)
     }
 
     /// Read all records asynchronously with progress reporting.
