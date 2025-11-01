@@ -55,7 +55,10 @@ fn convert_one_file(input_file: &Path, output_dir: &Path, chunk_size: usize) -> 
         records.len(),
         t0.elapsed()
     );
-    info!("   ├─ Found {} unique metrics", formatter.metrics_names.len());
+    info!(
+        "   ├─ Found {} unique metrics",
+        formatter.metrics_names.len()
+    );
 
     // Write to Parquet
     let t1 = Instant::now();
@@ -65,10 +68,7 @@ fn convert_one_file(input_file: &Path, output_dir: &Path, chunk_size: usize) -> 
 
     info!("   ├─ Wrote Parquet in {:.2?}", t1.elapsed());
     info!("   ├─ {}", stats.summary());
-    info!(
-        "   └─ ✓ Total time: {:.2?}\n",
-        start_time.elapsed()
-    );
+    info!("   └─ ✓ Total time: {:.2?}\n", start_time.elapsed());
 
     Ok(())
 }
@@ -92,13 +92,7 @@ fn main() -> Result<()> {
     // Find all .wpilog files
     let wpilog_files: Vec<_> = fs::read_dir(in_path)?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                == Some("wpilog")
-        })
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("wpilog"))
         .collect();
 
     if wpilog_files.is_empty() {
@@ -108,7 +102,7 @@ fn main() -> Result<()> {
 
     info!("");
     info!("╔════════════════════════════════════════════╗");
-    info!("║       WPILog → Parquet Converter          ║");
+    info!("║       WPILog → Parquet Converter           ║");
     info!("╚════════════════════════════════════════════╝");
     info!("");
     info!(
